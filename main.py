@@ -6,38 +6,6 @@ import cv2
 import PySimpleGUI as psg
 from CameraFrameGetter import *
 
-
-# def computeDistanceAndSendWarning(frame, boxes, classes, scores, roadType):
-#     for i, b in enumerate(boxes[0]):  # iterate through detection boxes
-#         if scores[0][i] > 0.4:  # if the confidence level is bigger than 50%
-#             # we subtract the width difference from 1, so the value will be towards 0 when the object is closer and to 1 when it's far away
-#             approxDist = round((1 - (boxes[0][i][3] - boxes[0][i][1])) ** 8, 2) * 20  # distance computed using detection box width, multiplied by 20 to convert in meters
-#                                                                                      # the power can be tweaked to affect granularity
-#             middleX = (boxes[0][i][1] + boxes[0][i][3]) / 2  # middle of the X coord of detected object
-#             middleY = (boxes[0][i][0] + boxes[0][i][2]) / 2  # middle of the Y coord of detected object
-#
-#             # if it's a bicycle,       a car,              a motorcycle,           a bus,              a train                 or a truck
-#             if classes[0][i] == 2 or classes[0][i] == 3 or classes[0][i] == 4 or classes[0][i] == 6 or classes[0][i] == 7 or classes[0][i] == 8:
-#                 #           image         text                          text position                     text font            size       color   line width
-#                 cv2.putText(frame, '{:0.1f} m'.format(approxDist), (int(middleX * 1300), int(middleY * 550)), cv2.FONT_ITALIC, 0.7, (255, 255, 255), 2)  # show approximate distance
-#                 if roadType == 'highway':      # verify type of road
-#                     if 0.45 < middleX < 0.55:    # if the object is in the ego vehicle path
-#                         if approxDist <= 13:  # if the approximate distance is smaller than the threshold
-#                             cv2.putText(frame, '!WARNING!', (int(middleX * 1280), int(middleY * 720)), cv2.FONT_ITALIC, 1.0, (0, 0, 255), 3)  # send warning
-#                 if roadType == 'normal':       # verify type of road
-#                     if 0.4 < middleX < 0.6:      # if the object is in the ego vehicle path
-#                         if approxDist <= 9:  # if the approximate distance is smaller than the threshold
-#                             cv2.putText(frame, '!WARNING!', (int(middleX * 1280), int(middleY * 720)), cv2.FONT_ITALIC, 1.0, (0, 0, 255), 3)  # send warning
-#                 if roadType == 'city':         # verify type of road
-#                     if 0.3 < middleX < 0.7:      # if the object is in the ego vehicle path
-#                         if approxDist < 6:   # if the approximate distance is smaller than the threshold
-#                             cv2.putText(frame, '!WARNING!', (int(middleX * 1280), int(middleY * 720)), cv2.FONT_ITALIC, 1.0, (0, 0, 255), 3)  # send warning
-#             elif classes[0][i] == 1 :  # if it's a pedestrian
-#                 #           image           text                                  text position                 text font         size       color   line width
-#                 cv2.putText(frame, '{:0.1f} m'.format(approxDist / 3), (int(middleX * 1300), int(middleY * 550)), cv2.FONT_ITALIC, 0.7, (255, 255, 255), 2)  # show approximate distance
-#                 if 0.2 < middleX < 0.8:  # if the object is in the ego vehicle path
-#                     cv2.putText(frame, '!WARNING!', (int(middleX * 1280) , int(middleY * 720)), cv2.FONT_ITALIC, 1.0, (0, 0, 255), 3)
-
 def computeDistanceAndSendWarning(frame, results, roadType):
     boxes = results[0].boxes.xywh.cpu().numpy()  # Bounding boxes in YOLOv8 format [x_center, y_center, width, height]
     classes = results[0].boxes.cls.int().cpu()  # Detected classes
@@ -79,35 +47,26 @@ def computeDistanceAndSendWarning(frame, results, roadType):
 
 
 
-# Different method used for the webcam input, because of the CameraFrameGetter optimization
+# The detection method
 def detection(input, roadType):
-    # Initialize model
-    model = YOLO("yolov8n.pt")
-
+    # Initialize the quantified and faster YOLOv8 model
+    model = YOLO("yolov8n_integer_quant.tflite")
 
     # Variable for last frame processed time
     lastFrameTime = 0
-    # Variable for current frame processed time
-    currentFrameTime = 0
 
     while True:
         frame = input.read()
 
-        # Execute the prediction using YoloV8
-        results = model.predict(source=frame, save=False, conf=0.5, save_txt=False, show=True)
-
-        #for r in results:
-            #detection_boxes = r.boxes
-            #classifications
-        #detection_boxes = results[0].boxes.xyxy
-        #classifications = results.names[results.xyxy[0][:, 5].cpu().numpy().astype(int)]
-        #scores = results.xyxy[0][:, 4].cpu().numpy()
+        # Execute the prediction using YoloV8 and save the result
+        results = model.predict(source=frame, save=False, conf=0.5, save_txt=False, show=False)
 
         # Compute distances to TPs and send warnings
         t = threading.Thread(target=computeDistanceAndSendWarning, args=[frame, results, roadType])
         t.start()
         t.join()
 
+        # Variable for current frame processed time
         currentFrameTime = time.time()
         fps = str(int(1 / (currentFrameTime - lastFrameTime)))
         lastFrameTime = currentFrameTime
@@ -126,8 +85,8 @@ def main():
     roadType = 'normal'
 
     psg.theme("Dark")
-    mainFont = "Comic Sans MS", "10"
-    secondaryFont = "Comic Sans MS", "14"
+    mainFont = "Arial", "10"
+    secondaryFont = "Arial", "14"
     # Main buttons layout
     mainButtonsLine = [
         [psg.Button("START DETECTION", size=(20, 7), font=mainFont),
@@ -144,14 +103,14 @@ def main():
 
     # Main layout window
     mainLayout = [
-        [psg.Text("TRAFFIC PARTICIPANTS DETECTION", size=(120,0), justification="center", font=("Comic Sans MS", "20"))],
+        [psg.Text("TRAFFIC PARTICIPANTS DETECTION", size=(120,0), justification="center", font=("Arial", "20"))],
         [psg.Text("CURRENT ROAD TYPE SETTING: ", size=(30, 25), font=secondaryFont), psg.Text("normal", size=(60, 25), key='setting', font=secondaryFont)],
         [psg.Column(mainButtonsLine, vertical_alignment='center', justification='center', k='-C-')],
         [psg.Column(settingsButtonsLine, vertical_alignment='center', justification='center', k='-C-')]
     ]
 
     mainWindow = psg.Window("TRAFFIC PARTICIPANTS DETECTION", mainLayout, resizable=True, finalize=True)
-    mainWindow.Maximize()
+    #mainWindow.Maximize()
     while True:
         event, values = mainWindow.read(timeout=20)
         if event == "EXIT" or event == psg.WIN_CLOSED:
@@ -163,7 +122,7 @@ def main():
         elif event == "TEST DETECTION":
             print(roadType)
             #testInput = cv2.VideoCapture('testRecs/city2.mp4')
-            testInput = CameraFrameGetter('testRecs/city2.mp4', 'testVideo').start()
+            testInput = CameraFrameGetter('city2.mp4', 'testVideo').start()
             detection(testInput, roadType)
         elif event == "city":
             roadType = "city"
