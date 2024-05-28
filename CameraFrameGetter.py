@@ -4,11 +4,16 @@ import cv2
 
 
 class CameraFrameGetter:
-    def __init__(self, src=0, detectionType='camera'):
+    def __init__(self, src=0, detectionType='camera', resize_width=None, resize_height=None):
         self.detectionType = detectionType
+        self.resize_width = resize_width
+        self.resize_height = resize_height
         # initialize the camera stream and read the first frame from input
         self.input = cv2.VideoCapture(src)
         (self.success, self.frame) = self.input.read()
+        # resize the first frame if resize dimensions are provided
+        if self.resize_width and self.resize_height:
+            self.frame = cv2.resize(self.frame, (self.resize_width, self.resize_height))
         # flag for thread status
         self.stopped = False
 
@@ -27,6 +32,11 @@ class CameraFrameGetter:
                 return
             # continue reading from input
             (self.success, self.frame) = self.input.read()
+
+            # Ensure resizing for every frame read
+            #if self.success and self.resize_width and self.resize_height:
+                #self.frame = cv2.resize(self.frame, (self.resize_width, self.resize_height))
+
             if self.detectionType == 'testVideo':
                 time.sleep(frame_time)
 
