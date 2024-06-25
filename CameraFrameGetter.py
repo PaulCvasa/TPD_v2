@@ -33,10 +33,6 @@ class CameraFrameGetter:
             # continue reading from input
             (self.success, self.frame) = self.input.read()
 
-            # Ensure resizing for every frame read
-            #if self.success and self.resize_width and self.resize_height:
-                #self.frame = cv2.resize(self.frame, (self.resize_width, self.resize_height))
-
             if self.detectionType == 'testVideo':
                 time.sleep(frame_time)
 

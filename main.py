@@ -1,9 +1,12 @@
-import threading
+import csv
+import tkinter as tk
+from tkinter import ttk
+from threading import Thread
 import time
 import numpy as np
+import psutil
 from ultralytics import YOLO
 import cv2
-import PySimpleGUI as psg
 from CameraFrameGetter import CameraFrameGetter
 
 def computeDistanceAndSendWarning(frame, results, roadType):
@@ -14,7 +17,19 @@ def computeDistanceAndSendWarning(frame, results, roadType):
     frameWidth = 1280
     frameHeight = 720
 
+    # Define colors for different classes
+    colors = {
+        0: (0, 255, 0),  # Pedestrian - Green
+        1: (255, 0, 0),  # Bicycle - Blue
+        2: (0, 0, 255),  # Car - Red
+        3: (255, 255, 0),  # Motorcycle - Yellow
+        5: (255, 165, 0),  # Bus - Orange
+        6: (255, 20, 147),  # Train - DeepPink
+        7: (138, 43, 226)  # Truck - BlueViolet
+    }
+
     for i, b in enumerate(boxes):
+        classId = classes[i].item()
         x_center, y_center, width, height = boxes[i]
         if scores[i] > 0.4:  # if the confidence level is bigger than 40%
             # distance computed using detection box width, multiplied by 1000 to convert it in meters
@@ -24,8 +39,16 @@ def computeDistanceAndSendWarning(frame, results, roadType):
             # the power can be tweaked to affect granularity
             x_center_percentage = x_center / frame.shape[1] # percentage of how far the x coordinate is from the center of the frame
 
+            # Draw bounding box
+            x1 = int(x_center - width / 2)
+            y1 = int(y_center - height / 2)
+            x2 = int(x_center + width / 2)
+            y2 = int(y_center + height / 2)
+            color = colors.get(classId, (255, 255, 255)) #default is black
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
             # if it's a pedestrian
-            if classes[i] == 0:
+            if classId == 0:
             #           image           text                                                 text position                                   text font         size       color   line width
                 cv2.putText(frame, '{:0.1f} m'.format(approxDist / 3), (int(x_center_percentage * frameWidth + 20), int(x_center_percentage * frameHeight + 130)), cv2.FONT_ITALIC, 0.7, (255, 255, 255), 2)  # show approximate distance
                 if 0.2 < x_center_percentage < 0.8:  # if the object is in the ego vehicle path
@@ -52,23 +75,30 @@ def computeDistanceAndSendWarning(frame, results, roadType):
 
 
 def detectLanes(frame):
+    global lane_detection_counter, lane_detection_active
     height, width = frame.shape[:2]
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # transform frame to grayscale
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)  # add gaussian blur
     edges = cv2.Canny(blur, 50, 150)
 
-    # Mask for bottom half of the image
+    # Mask for the region of interest
     mask = np.zeros_like(edges)
     polygon = np.array([[
         (0, height),
-        (width, height),
-        (width, height // 2),
-        (0, height // 2)
+        (400, (height // 2)+150),
+        (880, (height // 2)+150),
+        (width , height)
     ]], np.int32)
     cv2.fillPoly(mask, polygon, 255)
     masked_edges = cv2.bitwise_and(edges, mask)
 
-    lines = cv2.HoughLinesP(masked_edges, 2, np.pi / 180, 50, np.array([]), minLineLength=40, maxLineGap=100)
+    # Visualize the mask on the frame
+    #mask_visualization = frame.copy()
+    #cv2.polylines(mask_visualization, polygon, isClosed=True, color=(0, 255, 255), thickness=2)
+
+    # Parameters: minLineLength increased for longer lines
+    minLineLength = 100  # Set the minimum line length
+    lines = cv2.HoughLinesP(masked_edges, 2, np.pi / 180, 50, np.array([]), minLineLength=minLineLength, maxLineGap=100)
 
     left_lines = []
     right_lines = []
@@ -76,9 +106,9 @@ def detectLanes(frame):
     if lines is not None:
         for line in lines:
             x1, y1, x2, y2 = line[0]
-            slope = (y2 - y1) / (x2 - x1)
+            slope = (y2 - y1) / (x2 - x1) if x2 != x1 else np.inf
             length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-            if 0.5 < abs(slope) < 2 and length > 50:  # Filter near-vertical lines and based on length
+            if 0.5 < abs(slope) < 2 and length > minLineLength:  # Filter near-vertical lines and based on length
                 if slope < 0:  # Left line
                     left_lines.append((length, line[0]))
                 else:  # Right line
@@ -91,105 +121,183 @@ def detectLanes(frame):
     line_image = np.zeros_like(frame)
 
     # Draw the longest left and right lines
+    left_detected = False
+    right_detected = False
+
     if left_lines:
         x1, y1, x2, y2 = left_lines[0][1]
         cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 5)
+        left_detected = True
 
     if right_lines:
         x1, y1, x2, y2 = right_lines[0][1]
         cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 5)
+        right_detected = True
 
-    combined_image = cv2.addWeighted(frame, 0.8, line_image, 1, 1)
+    # Update lane detection status
+    if left_detected and right_detected:
+        lane_detection_counter += 1
+    else:
+        lane_detection_counter = 0
+
+    if lane_detection_counter >= 5:
+        lane_detection_active = True
+    else:
+        lane_detection_active = False
+
+    combined_image = cv2.addWeighted(frame, 0.8, line_image, 1, 1) #mask_visualization
+
+    # Display lane detection status
+    if lane_detection_active:
+        cv2.putText(combined_image, 'Lane Detection Active', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+
     return combined_image
 
 
+
+
 # The detection method
-def detection(input, roadType):
+def detection(input, roadType, filename):
     # Initialize the quantified and faster YOLOv8 model
     model = YOLO("yolov8n_integer_quant.tflite")#models/yolov8n_saved_model/yolov8n_float16.tflite
 
+    #Results csv file
+    results_file = 'detection_results.csv'
+
     # Variable for last frame processed time
     lastFrameTime = 0
+    total_frames = 0
 
-    while True:
-        frame = input.read()
+    with open(results_file, mode='a', newline='') as file:
+        #writer = csv.writer(file)
+        #writer.writerow(['Video Name', 'Frame', 'FPS', 'CPU Usage', 'Memory Usage', 'Preprocess Speed', 'Inference Speed', 'Postprocess Speed'])
 
-        if frame is None:
-            print('frame skippedq')
-            continue
+        while True:
+            frame = input.read()
 
-        # Detect lanes and overlay on frame
-        frame_with_lanes = detectLanes(frame)
+            if cv2.waitKey(1) & 0xFF == ord('q') or input.stopped or frame is None:
+                input.stop()
+                cv2.destroyAllWindows()
+                break
 
-        # Execute the prediction using YoloV8
-        results = model.predict(source=frame_with_lanes, save=False, conf=0.5, iou=0.2, imgsz=640, half=True, save_txt=False, show=True, stream_buffer=True, augment=True, agnostic_nms=True,
-                                classes=[0, 1, 2, 3, 5, 6, 7])
+            # Detect lanes and overlay on frame
+            frame_with_lanes = detectLanes(frame)
 
-        # Compute distances to TPs and send warnings
-        computeDistanceAndSendWarning(frame_with_lanes, results, roadType)
+            # Execute the prediction using YoloV8
+            results = model.predict(source=frame_with_lanes, save=False, conf=0.5, iou=0.2, imgsz=640, half=True,
+                                    save_txt=False, show=False, stream_buffer=True, augment=True, agnostic_nms=True,
+                                    classes=[0, 1, 2, 3, 5, 6, 7])
 
-        # Variable for current frame processed time
-        currentFrameTime = time.time()
-        fps = str(int(1 / (currentFrameTime - lastFrameTime)))
-        lastFrameTime = currentFrameTime
+            # Compute distances to TPs and send warnings
+            computeDistanceAndSendWarning(frame_with_lanes, results, roadType)
 
-        cv2.putText(frame_with_lanes, fps, (7, 25), cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 255, 0), 3, cv2.LINE_AA)
-        cv2.imshow('Traffic Participants Detection - Press Q to stop the detection', frame_with_lanes)
+            # Variable for current frame processed time
+            currentFrameTime = time.time()
+            fps = str(int(1 / (currentFrameTime - lastFrameTime)))
+            lastFrameTime = currentFrameTime
 
-        if cv2.waitKey(1) & 0xFF == ord('q') or input.stopped:
-            input.stop()
-            cv2.destroyAllWindows()
-            break
+            # Collect resource usage metrics
+            cpu_usage = psutil.cpu_percent()
+            memory_usage = psutil.virtual_memory().percent
 
+            # Extract speed from YOLO results
+            if len(results) > 0:
+                preprocess_speed = results[0].speed['preprocess']
+                inference_speed = results[0].speed['inference']
+                postprocess_speed = results[0].speed['postprocess']
 
-def main():
-    roadType = 'normal'
+            # Write analytic data to csv
+            #writer.writerow([filename, total_frames, fps, cpu_usage, memory_usage, preprocess_speed, inference_speed, postprocess_speed])
 
-    psg.theme("Dark")
-    mainFont = "Arial", "10"
-    secondaryFont = "Arial", "14"
-    # Main buttons layout
-    mainButtonsLine = [
-        [psg.Button("START DETECTION", size=(20, 7), font=mainFont),
-         psg.Button("TEST DETECTION", size=(20, 7), button_color='Blue', font=mainFont),
-         psg.Button("EXIT", size=(20, 7), button_color='Red', font=mainFont)]
-    ]
+            total_frames += 1
 
-    # Settings Buttons layout
-    settingsButtonsLine = [
-        [psg.Button("CITY ROAD", size=(20, 7), button_color='Gray', font=mainFont, key="city"),
-         psg.Button("NORMAL ROAD", size=(20, 7), button_color='Black', font=mainFont, key="normal"),
-         psg.Button("HIGHWAY", size=(20, 7), button_color='Gray', font=mainFont, key="highway")]
-    ]
-
-    # Main layout window
-    mainLayout = [
-        [psg.Text("TRAFFIC PARTICIPANTS DETECTION", size=(120,0), justification="center", font=("Arial", "20"))],
-        [psg.Text("CURRENT ROAD TYPE SETTING: ", size=(30, 25), font=secondaryFont), psg.Text("normal", size=(60, 25), key='setting', font=secondaryFont)],
-        [psg.Column(mainButtonsLine, vertical_alignment='center', justification='center', k='-C-')],
-        [psg.Column(settingsButtonsLine, vertical_alignment='center', justification='center', k='-C-')]
-    ]
-
-    mainWindow = psg.Window("TRAFFIC PARTICIPANTS DETECTION", mainLayout, resizable=True, finalize=True)
-    #mainWindow.Maximize()
-    while True:
-        event, values = mainWindow.read(timeout=20)
-        if event == "EXIT" or event == psg.WIN_CLOSED:
-            break
-        elif event == "START DETECTION":
-            print(roadType)
-            videoInput = CameraFrameGetter(0, 480,480).start()
-            detection(videoInput, roadType)
-        elif event == "TEST DETECTION":
-            print(roadType)
-            #testInput = cv2.VideoCapture('testRecs/city2.mp4')
-            testInput = CameraFrameGetter('city2.mp4', 'testVideo', 480, 240).start()
-            detection(testInput, roadType)
-        elif event in ["city", "normal", "highway"]:
-            roadType = event
-            mainWindow['setting'].update(value=roadType)
-            for key in ["city", "normal", "highway"]:
-                mainWindow[key].Update(button_color=('Black' if key == event else 'Gray'))
+            cv2.putText(frame_with_lanes, fps, (7, 25), cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 255, 0), 3, cv2.LINE_AA)
+            cv2.imshow('Traffic Participants Detection - Press Q to stop the detection', frame_with_lanes)
 
 
-main()
+class TrafficParticipantsDetectionApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Traffic Participants Detection - TPD")
+        self.geometry("800x600")
+        self.roadType = 'normal'
+        self.create_widgets()
+
+    def create_widgets(self):
+        # Title
+        title_label = ttk.Label(self, text="TRAFFIC PARTICIPANTS DETECTION - Raspberry PI 5 8GB", font=("Arial", 20))
+        title_label.pack(pady=10)
+
+        # Current road type
+        self.road_type_label = ttk.Label(self, text="CURRENT ROAD TYPE SETTING: normal", font=("Arial", 14))
+        self.road_type_label.pack(pady=10)
+
+        # Road type buttons frame
+        road_type_frame = ttk.Frame(self)
+        road_type_frame.pack(pady=20)
+
+        # Road type buttons
+        city_button = ttk.Button(road_type_frame, text="CITY ROAD", command=lambda: self.set_road_type('city'))
+        city_button.grid(row=0, column=0, padx=10, pady=10)
+
+        normal_button = ttk.Button(road_type_frame, text="NORMAL ROAD", command=lambda: self.set_road_type('normal'))
+        normal_button.grid(row=0, column=1, padx=10, pady=10)
+
+        highway_button = ttk.Button(road_type_frame, text="HIGHWAY", command=lambda: self.set_road_type('highway'))
+        highway_button.grid(row=0, column=2, padx=10, pady=10)
+
+        # Buttons frame
+        buttons_frame = ttk.Frame(self)
+        buttons_frame.pack(pady=20)
+
+        # Start detection button
+        start_button = ttk.Button(buttons_frame, text="START DETECTION", command=self.start_detection, style='Start.TButton')
+        start_button.grid(row=0, column=0, padx=10, pady=10)
+
+        # Test detection button
+        test_button = ttk.Button(buttons_frame, text="TEST DETECTION", command=self.test_detection, style='Test.TButton')
+        test_button.grid(row=0, column=1, padx=10, pady=10)
+
+        # Exit button
+        exit_button = ttk.Button(buttons_frame, text="EXIT", command=self.quit, style='Exit.TButton')
+        exit_button.grid(row=0, column=2, padx=10, pady=10)
+
+        # Author label
+        author_label = tk.Label(self, text="Author: Paul Cvasa", font=("Arial", 10))
+        author_label.place(relx=1.0, rely=1.0, anchor='se', x=-10, y=-10)
+
+        # Version Label
+        version_label = tk.Label(self, text="version: 2.0", font=("Arial", 10))
+        version_label.place(relx=0.0, rely=1.0, anchor='sw', x=10, y=-10)
+
+
+        # Custom styles for buttons
+        style = ttk.Style()
+        style.configure('TButton', font=('Arial', 12), padding=10)
+        style.configure('Start.TButton', background='green', foreground='white')
+        style.map('Start.TButton', background=[('active', 'dark green')])
+
+        style.configure('Test.TButton', background='yellow', foreground='black')
+        style.map('Test.TButton', background=[('active', 'gold')])
+
+        style.configure('Exit.TButton', background='red', foreground='white')
+        style.map('Exit.TButton', background=[('active', 'dark red')])
+
+    def set_road_type(self, road_type):
+        self.roadType = road_type
+        self.road_type_label.config(text=f"CURRENT ROAD TYPE SETTING: {road_type}")
+
+    def start_detection(self):
+        print(self.roadType)
+        videoInput = CameraFrameGetter(0, 480, 480).start()
+        detection(videoInput, self.roadType, filename='realtime-camera')
+
+    def test_detection(self):
+        print(self.roadType)
+        filename = 'testRecs/tpd.mp4'
+        testInput = CameraFrameGetter(filename, 'testVideo', 480, 240).start()
+        detection(testInput, self.roadType, filename)
+
+if __name__ == "__main__":
+    app = TrafficParticipantsDetectionApp()
+    app.mainloop()
