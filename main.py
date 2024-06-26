@@ -157,7 +157,7 @@ def detectLanes(frame):
 
 
 # The detection method
-def detection(input, roadType, filename):
+def detection(input, roadType, filename, lane_detection_enabled):
     # Initialize the quantified and faster YOLOv8 model
     model = YOLO("yolov8n_integer_quant.tflite")#models/yolov8n_saved_model/yolov8n_float16.tflite
 
@@ -180,16 +180,17 @@ def detection(input, roadType, filename):
                 cv2.destroyAllWindows()
                 break
 
-            # Detect lanes and overlay on frame
-            frame_with_lanes = detectLanes(frame)
+            if lane_detection_enabled:
+                # Detect lanes and overlay on frame
+                frame = detectLanes(frame)
 
             # Execute the prediction using YoloV8
-            results = model.predict(source=frame_with_lanes, save=False, conf=0.5, iou=0.2, imgsz=640, half=True,
+            results = model.predict(source=frame, save=False, conf=0.5, iou=0.2, imgsz=640, half=True,
                                     save_txt=False, show=False, stream_buffer=True, augment=True, agnostic_nms=True,
                                     classes=[0, 1, 2, 3, 5, 6, 7])
 
             # Compute distances to TPs and send warnings
-            computeDistanceAndSendWarning(frame_with_lanes, results, roadType)
+            computeDistanceAndSendWarning(frame, results, roadType)
 
             # Variable for current frame processed time
             currentFrameTime = time.time()
@@ -211,8 +212,8 @@ def detection(input, roadType, filename):
 
             total_frames += 1
 
-            cv2.putText(frame_with_lanes, fps, (7, 25), cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 255, 0), 3, cv2.LINE_AA)
-            cv2.imshow('Traffic Participants Detection - Press Q to stop the detection', frame_with_lanes)
+            cv2.putText(frame, fps, (7, 25), cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 255, 0), 3, cv2.LINE_AA)
+            cv2.imshow('Traffic Participants Detection - Press Q to stop the detection', frame)
 
 
 class TrafficParticipantsDetectionApp(tk.Tk):
@@ -221,6 +222,7 @@ class TrafficParticipantsDetectionApp(tk.Tk):
         self.title("Traffic Participants Detection - TPD")
         self.geometry("800x600")
         self.roadType = 'normal'
+        self.lane_detection_enabled = False  # Initialize lane detection status
         self.create_widgets()
 
     def create_widgets(self):
@@ -237,13 +239,13 @@ class TrafficParticipantsDetectionApp(tk.Tk):
         road_type_frame.pack(pady=20)
 
         # Road type buttons
-        city_button = ttk.Button(road_type_frame, text="CITY ROAD", command=lambda: self.set_road_type('city'))
+        city_button = ttk.Button(road_type_frame, text="CITY ROAD", command=lambda: self.set_road_type('city'), style='RoadType.TButton')
         city_button.grid(row=0, column=0, padx=10, pady=10)
 
-        normal_button = ttk.Button(road_type_frame, text="NORMAL ROAD", command=lambda: self.set_road_type('normal'))
+        normal_button = ttk.Button(road_type_frame, text="NORMAL ROAD", command=lambda: self.set_road_type('normal'), style='RoadType.TButton')
         normal_button.grid(row=0, column=1, padx=10, pady=10)
 
-        highway_button = ttk.Button(road_type_frame, text="HIGHWAY", command=lambda: self.set_road_type('highway'))
+        highway_button = ttk.Button(road_type_frame, text="HIGHWAY", command=lambda: self.set_road_type('highway'), style='RoadType.TButton')
         highway_button.grid(row=0, column=2, padx=10, pady=10)
 
         # Buttons frame
@@ -270,6 +272,15 @@ class TrafficParticipantsDetectionApp(tk.Tk):
         version_label = tk.Label(self, text="version: 2.0", font=("Arial", 10))
         version_label.place(relx=0.0, rely=1.0, anchor='sw', x=10, y=-10)
 
+        # Lane detection status label
+        self.lane_detection_label = ttk.Label(self, text="Lane Detection: Disabled", font=("Arial", 14))
+        self.lane_detection_label.pack(pady=10)
+
+        # Lane detection toggle button
+        self.toggle_lane_detection_button = ttk.Button(self, text="Enable Lane Detection",
+                                                       command=self.toggle_lane_detection, style='RoadType.TButton')
+        self.toggle_lane_detection_button.pack(pady=10)
+
 
         # Custom styles for buttons
         style = ttk.Style()
@@ -283,6 +294,9 @@ class TrafficParticipantsDetectionApp(tk.Tk):
         style.configure('Exit.TButton', background='red', foreground='white')
         style.map('Exit.TButton', background=[('active', 'dark red')])
 
+        style.configure('RoadType.TButton', background='slate gray', foreground='black')
+        style.map('RoadType.TButton', background=[('active', 'slate gray')])
+
     def set_road_type(self, road_type):
         self.roadType = road_type
         self.road_type_label.config(text=f"CURRENT ROAD TYPE SETTING: {road_type}")
@@ -290,13 +304,23 @@ class TrafficParticipantsDetectionApp(tk.Tk):
     def start_detection(self):
         print(self.roadType)
         videoInput = CameraFrameGetter(0, 480, 480).start()
-        detection(videoInput, self.roadType, filename='realtime-camera')
+        detection(videoInput, self.roadType, filename='realtime-camera', lane_detection_enabled=self.lane_detection_enabled)
 
     def test_detection(self):
         print(self.roadType)
-        filename = 'testRecs/tpd.mp4'
+        filename = 'testRecs/city_Trim.mp4'
         testInput = CameraFrameGetter(filename, 'testVideo', 480, 240).start()
-        detection(testInput, self.roadType, filename)
+        detection(testInput, self.roadType, filename, lane_detection_enabled=self.lane_detection_enabled)
+
+    def toggle_lane_detection(self):
+        self.lane_detection_enabled = not self.lane_detection_enabled
+        if self.lane_detection_enabled:
+            self.lane_detection_label.config(text="Lane Detection: Enabled")
+            self.toggle_lane_detection_button.config(text="Disable Lane Detection")
+        else:
+            self.lane_detection_label.config(text="Lane Detection: Disabled")
+            self.toggle_lane_detection_button.config(text="Enable Lane Detection")
+
 
 if __name__ == "__main__":
     app = TrafficParticipantsDetectionApp()
